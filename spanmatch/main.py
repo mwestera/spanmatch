@@ -8,10 +8,9 @@ EXACT = 6
 
 
 
-def match_span_one_to_many(span1, spans2, return_index=False):
+def match_span_one_to_many(span1, spans2):
     """
     Compares a single spanset (= potentially discontinuous span) against multiple 'candidate spansets'.
-    Returns a string indicating the type of match.
     """
     span2_labels = [match_spans(span1, span2) for span2 in spans2]
     span1_label = max(span2_labels) if span2_labels else None
@@ -19,20 +18,16 @@ def match_span_one_to_many(span1, spans2, return_index=False):
 
     span1_label_str = MATCH_LABELS[span1_label]
 
-    if return_index:
-        return span1_label_str, index_of_exact_match
-    else:
-        return span1_label_str
+    return span1_label_str, index_of_exact_match
 
 
-def match_span_many_to_many(spans1, spans2):
-        # TODO: enable this?
-        # if order_fixed:
-        #     left = [match_span_multi(spanset1, [spanset2]) for spanset1, spanset2 in zip(spansets1, spansets2)]
-        #     right = [match_span_multi(spanset2, [spanset1]) for spanset2, spanset1 in zip(spansets2, spansets1)]
-        # else:
-        match_labels_left, match_indices_left = list(zip(*[match_span_one_to_many(spans1, spans2, return_index=True) for spans1 in spans1]))
-        match_labels_right, match_indices_right = list(zip(*[match_span_one_to_many(span2, spans1, return_index=True) for span2 in spans2]))
+def match_span_many_to_many(spans1, spans2, in_order=False):
+        if in_order:
+            match_labels_left, match_indices_left = list(zip(*[match_span_one_to_many(span1, [span2]) for span1, span2 in zip(spans1, spans2)]))
+            match_labels_right, match_indices_right = list(zip(*[match_span_one_to_many(span2, [span1]) for span2, span1 in zip(spans2, spans1)]))
+        else:
+            match_labels_left, match_indices_left = list(zip(*[match_span_one_to_many(spans1, spans2) for spans1 in spans1]))
+            match_labels_right, match_indices_right = list(zip(*[match_span_one_to_many(span2, spans1) for span2 in spans2]))
         return (match_labels_left, match_indices_left), (match_labels_right, match_indices_right)
 
 

@@ -30,6 +30,7 @@ def main():
     argparser.add_argument('--output', type=str, choices=modes, default=OUTPUT_LABELS, help="whether to output match labels, match orders, per-line scores, aggregate scores, or JSON structures")
     argparser.add_argument('--merge', action='store_true', help="whether to make spans continuous prior to eval")
     argparser.add_argument('--verb', action='store_true', help="verbose, set logging level to debug")
+    argparser.add_argument('--ordered', action='store_true', help="if the pairs are in the same order (so don't compare all to all)")
 
     args = argparser.parse_args()
 
@@ -39,10 +40,10 @@ def main():
         raise NotImplementedError('--merge not yet supported')
 
     pairs_to_compare = parse_lines(args.file)
-    results = evaluate_all(pairs_to_compare, cutoff=args.cutoff, do_print=True, mode=args.output)
+    results = evaluate_all(pairs_to_compare, cutoff=args.cutoff, do_print=True, mode=args.output, ordered=args.ordered)
 
 
-def evaluate_all(pairs_to_compare, cutoff=MATCH_LABELS[-1], do_print=False, mode=OUTPUT_AGGREGATE_SCORES):
+def evaluate_all(pairs_to_compare, cutoff=MATCH_LABELS[-1], do_print=False, mode=OUTPUT_AGGREGATE_SCORES, ordered=False):
 
     # TODO Refactor?
 
@@ -54,7 +55,7 @@ def evaluate_all(pairs_to_compare, cutoff=MATCH_LABELS[-1], do_print=False, mode
 
     for item in pairs_to_compare:
         (annotator1, spans1), (annotator2, spans2) = item.items()
-        (match_labels_left, match_indices_left), (match_labels_right, match_indices_right) = match_span_many_to_many(spans1, spans2)
+        (match_labels_left, match_indices_left), (match_labels_right, match_indices_right) = match_span_many_to_many(spans1, spans2, in_order=ordered)
         scores = compute_match_scores(match_labels_left, match_labels_right, cutoff_label=cutoff)
 
         if mode == OUTPUT_SCORES_PER_LINE:
