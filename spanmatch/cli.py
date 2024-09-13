@@ -21,6 +21,8 @@ OUTPUT_JSONL = 'jsonl'
 
 modes = [OUTPUT_LABELS, OUTPUT_MATCHES, OUTPUT_SCORES_PER_LINE, OUTPUT_AGGREGATE_SCORES, OUTPUT_JSONL]
 
+# TODO: Add characterwise and tokenwise scores as well.
+
 
 def main():
 
