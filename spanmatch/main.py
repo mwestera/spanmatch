@@ -13,7 +13,7 @@ def match_span_one_to_many(span1, spans2):
     Compares a single spanset (= potentially discontinuous span) against multiple 'candidate spansets'.
     """
     span2_labels = [match_spans(span1, span2) for span2 in spans2]
-    span1_label = max(span2_labels) if span2_labels else None
+    span1_label = max(span2_labels)
     index_of_exact_match = span2_labels.index(EXACT) if span1_label == EXACT else None
 
     span1_label_str = MATCH_LABELS[span1_label]
@@ -34,19 +34,24 @@ def match_span_many_to_many(spans1, spans2, in_order=False):
 def match_spans(span1, span2):
     # TODO: This function belongs in a span class
     subspan1_labels = []
+    if not span1:
+        return DISJOINT if span2 else EXACT
+
     for subspan1 in span1:
-        subspan2_labels = []
+        subspan2_labels = [DISJOINT]
         for subspan2 in span2:
             start1, end1 = subspan1[0], subspan1[1]
             start2, end2 = subspan2[0], subspan2[1]
-            if end1 < start2 or end2 < start1:
-                subspan2_labels.append(DISJOINT)
-            if start2 <= start1 <= end2 or start2 <= end1 <= end2:
-                subspan2_labels.append(OVERLAP)
-            if abs(start2 - start1) < 2 and abs(end2 - end1) < 2:
-                subspan2_labels.append(FUZZY)
             if start1 == start2 and end1 == end2:
                 subspan2_labels.append(EXACT)
+            elif abs(start2 - start1) < 2 and abs(end2 - end1) < 2:
+                subspan2_labels.append(FUZZY)
+            elif end1 < start2 or end2 < start1:
+                subspan2_labels.append(DISJOINT)
+            elif start2 <= start1 <= end2 or start2 <= end1 <= end2 or start1 <= start2 <= end1 or start1 <= end2 <= end1:
+                subspan2_labels.append(OVERLAP)
+            else:
+                raise NotImplementedError('Hmmm I thought I covered all cases...')
         subspan1_labels.append(max(subspan2_labels))
     best_subspan1_label = max(subspan1_labels)
     if best_subspan1_label != min(subspan1_labels):
