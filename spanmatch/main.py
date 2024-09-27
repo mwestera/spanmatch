@@ -48,6 +48,8 @@ def span_to_set(span: Span) -> set[int]:
     """
     >>> span_to_set([(1, 4), (7, 10)])
     {1, 2, 3, 7, 8, 9}
+    >>> span_to_set([(1, 4)])
+    {1, 2, 3}
     """
     return set(itertools.chain(*(range(*s) for s in span)))
 
