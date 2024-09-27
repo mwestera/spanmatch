@@ -68,5 +68,5 @@ cases_single = [
 def test_match_spans(case):
 
     span1, span2, margin, target = case
-    result = match_spans(span1, span2, margin=margin)
+    result = match_spans_categorical(span1, span2, margin=margin)
     assert result == target
