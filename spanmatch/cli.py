@@ -34,6 +34,7 @@ modes = [OUTPUT_LABELS, OUTPUT_MATCHES, OUTPUT_SCORES_PER_LINE, OUTPUT_AGGREGATE
 
 
 # TODO: Simplify/generalize input format
+# TODO: Allow comparing more than two annotators, pairwise
 
 def main():
 
