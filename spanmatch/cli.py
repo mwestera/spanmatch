@@ -4,11 +4,24 @@ import argparse
 import sys
 import json
 import itertools
+from collections import Counter
+
 from .main import *
+import spanviz
+
 
 import logging
 
 import math
+import webbrowser
+import pandas as pd
+import os
+
+import io
+import base64
+import matplotlib.pyplot as plt
+
+import tempfile
 
 OUTPUT_LABELS = 'labels'
 OUTPUT_MATCHES = 'matches'
@@ -30,6 +43,7 @@ def main():
     argparser.add_argument('--merge', action='store_true', help="whether to make spans continuous prior to eval")
     argparser.add_argument('--verb', action='store_true', help="verbose, set logging level to debug")
     argparser.add_argument('--ordered', action='store_true', help="if the pairs are in the same order (so don't compare all to all)")
+    argparser.add_argument('--html', required=False, nargs='?', type=argparse.FileType('w'), default=tempfile.NamedTemporaryFile('w', delete=False, suffix='.html'), help='output detailed html report to a file; tempfile used if omitted')
 
     args = argparser.parse_args()
 
@@ -38,8 +52,145 @@ def main():
     if args.merge:
         raise NotImplementedError('--merge not yet supported')
 
-    pairs_to_compare = parse_lines(args.file)
-    results = evaluate_all(pairs_to_compare, do_print=True, mode=args.output, ordered=args.ordered)
+    annotator1 = 'left' # TODO determine this from input data
+    annotator2 = 'right'
+    layers = ['questions', 'answers']
+
+    docs = [parse_line(line) for line in args.file]
+
+    results = do_comparison(docs, annotator1, annotator2, layers)
+
+    if args.html:
+        args.html.write(make_report(results, layers))
+        args.html.close()
+        webbrowser.open('file://' + os.path.abspath(args.html.name))
+
+
+def do_comparison(docs, annotator1, annotator2, layers):
+
+    bookkeeping = {**{l: {'labels_left': [],    # TODO layer labels
+                       'labels_right': [],
+                       'predictions': [],
+                       'targets': [],
+                       'tokenwise_scores': [],
+                       'categorical_scores': []} for l in layers},
+                    'alignment_mappings': [],
+                    'html': [f'<h2>Comparing {annotator1} and {annotator2}</h2>', f'\n<table><tr><td><b>{annotator1}</b></td><td><b>{annotator2}</b></td></tr>']}
+
+    for doc in docs:
+
+        texts, span_layers_left, span_layers_right = doc['text'], doc['spans1'], doc['spans2']
+
+        alignment_mapping = make_alignment_mapping(span_layers_left[0], span_layers_right[0], texts[0])
+        bookkeeping['alignment_mappings'].append(alignment_mapping)
+
+        spans2_aligned = [[spans[index] for index in alignment_mapping] for spans in span_layers_right]
+
+        for (layer, text, spans_left, spans_right) in zip(layers, texts, span_layers_left, spans2_aligned):
+
+            if not spans_left or not spans_right:   # TODO necessary?
+                return None, None
+
+            predictions, targets = [], []
+            labels_left, labels_right = [], []
+
+            for span1, span2 in zip(spans_left, spans_right):
+                preds, targs = match_spans_tokenwise(span1, span2, text)
+
+                predictions.extend(preds)
+                targets.extend(targs)
+                labels_left.append(match_spans_categorical(span1, span2))
+                labels_right.append(match_spans_categorical(span2, span1))
+
+            record = bookkeeping[layer]
+
+            record['labels_left'].extend(labels_left)
+            record['labels_right'].extend(labels_right)
+            record['predictions'].extend(predictions)
+            record['targets'].extend(targets)
+            record['tokenwise_scores'].append(compute_binary_classification_scores(predictions, targets))
+            record['categorical_scores'].append(compute_categorical_scores(labels_left, labels_right))
+
+        bookkeeping['html'].append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right))
+
+    return bookkeeping
+
+
+def make_report(bookkeeping, layers):
+
+    html_for_comparison = bookkeeping['html'].copy()
+
+    aggregated_scores = []
+    for layer in layers:
+        record = bookkeeping[layer]
+
+        scores = {
+            ('layer', '', ''): layer,
+            **{('tokenwise', 'micro', key): value for key, value in compute_binary_classification_scores(record['predictions'], record['targets']).items()},
+            **{('tokenwise', 'macro', key): value for key, value in compute_macro_scores(record['tokenwise_scores']).items()},
+            **{('categorical', 'micro', key): value for key, value in compute_categorical_scores(record['labels_left'], record['labels_right']).items()},
+            **{('categorical', 'macro', key): value for key, value in compute_macro_scores(record['categorical_scores']).items()},
+        }
+        aggregated_scores.append(scores)
+
+    df_match_counts = pd.DataFrame.from_dict(Counter(bookkeeping['questions']['labels_left']), orient='index')
+    df_match_counts.plot(kind='bar')
+    plot_html = plot_to_html()
+    html_for_comparison.insert(1, f'<h3>Question spans:</h3>\n{plot_html}\n')
+
+    df_match_counts = pd.DataFrame.from_dict(Counter(bookkeeping['answers']['labels_left']), orient='index')
+    df_match_counts.plot(kind='bar')
+    plot_html = plot_to_html()
+    html_for_comparison.insert(1, f'<h3>Answer spans:</h3>\n{plot_html}\n')
+
+    html_for_comparison.append('</table>\n\n')
+
+    scores_df = pd.DataFrame(aggregated_scores)
+    scores_df.columns = pd.MultiIndex.from_tuples(aggregated_scores[0].keys())
+    # .to_markdown(floatfmt='.2f')
+    logging.info(scores_df.to_string())  # TODO: Maybe also log some plots?
+    html_for_comparison.insert(1, scores_df.to_html(float_format='{:.2f}'.format) + '\n\n')
+
+    return ''.join(html_for_comparison)
+
+
+def plot_to_html():
+    """
+    https://stackoverflow.com/a/63381737
+    """
+    s = io.BytesIO()
+    plt.savefig(s, format='png', bbox_inches="tight")
+    plt.close()
+    plot_base64 = base64.b64encode(s.getvalue()).decode("utf-8").replace("\n", "")
+    return f'<img src="data:image/png;base64,{plot_base64}">'
+
+
+def make_side_by_side_html(document_id, texts, spans1, spans2):
+
+    questions_text, context = texts
+    # question_spans_aligned_left, question_spans_aligned_right, answer_spans_left, answer_spans_right = spans1[0], spans2[0], spans1[1], spans2[2]
+
+    # TODO Avoid need for converting for spanviz
+    question_spans_aligned_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans1[0])]
+    question_spans_aligned_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans2[0])]
+    answer_spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans1[1])]
+    answer_spans_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans1[2])]
+
+    q_left = spanviz.spans_to_html(questions_text, question_spans_aligned_left)
+    q_right = spanviz.spans_to_html(questions_text, question_spans_aligned_right)
+    a_left = spanviz.spans_to_html(context, answer_spans_left)
+    a_right = spanviz.spans_to_html(context, answer_spans_right)
+
+    html = f'''<tr><td></td></tr><tr><td><i>{document_id}</i></td></tr>
+    <tr><td><b>Questions:</b></td></tr>
+    <tr><td>{q_left}</td>
+    <td>{q_right}</td></tr>
+    <tr><td></td></tr>
+    <tr><td><b>Answers:</b></td></tr>
+    <tr><td>{a_left}</td>
+    <td>{a_right}</td></tr>
+    '''
+    return html
 
 
 def evaluate_all(pairs_to_compare, do_print=False, mode=OUTPUT_AGGREGATE_SCORES, ordered=False):
@@ -100,16 +251,17 @@ def evaluate_all(pairs_to_compare, do_print=False, mode=OUTPUT_AGGREGATE_SCORES,
     return aggregated_scores
 
 
-def parse_lines(file):
-    for line in file:
-        try:
-            d = json.loads(line)    # TODO: type validation (dict with two keys, values list of lists of pairs of ints
-            yield d
-        except json.JSONDecodeError:
-            left, right = line.strip().split('\t')
-            spansets1 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in left.split(';')]
-            spansets2 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in right.split(';')]
-            yield {'left': spansets1, 'right': spansets2}
+def parse_line(line):
+    try:
+        d = json.loads(line)    # TODO: type validation (dict with two keys, values [lists of] list of lists of pairs of ints; see test3.txt
+        d['spans1'] = [[[(s['start'], s['end']) for s in span] for span in spanlevel] for spanlevel in d['spans1']]
+        d['spans2'] = [[[(s['start'], s['end']) for s in span] for span in spanlevel] for spanlevel in d['spans2']]
+        return d
+    except json.JSONDecodeError:
+        left, right = line.strip().split('\t')
+        spansets1 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in left.split(';')]
+        spansets2 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in right.split(';')]
+        return {'left': spansets1, 'right': spansets2}
 
 
 if __name__ == '__main__':
