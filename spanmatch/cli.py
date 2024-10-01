@@ -12,7 +12,6 @@ import spanviz
 
 import logging
 
-import math
 import webbrowser
 import pandas as pd
 import os
@@ -34,11 +33,13 @@ OUTPUT_JSONL = 'jsonl'
 modes = [OUTPUT_LABELS, OUTPUT_MATCHES, OUTPUT_SCORES_PER_LINE, OUTPUT_AGGREGATE_SCORES, OUTPUT_JSONL]
 
 
+# TODO: Simplify/generalize input format
+
 def main():
 
     argparser = argparse.ArgumentParser(description='Evaluating multi-disco-spans.')
-    argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help="file with text to process (default: stdin)")
-    argparser.add_argument('--output', type=str, choices=modes, default=OUTPUT_LABELS, help="whether to output match labels, match orders, per-line scores, aggregate scores, or JSON structures")
+    argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help="file with json lines to process (default: stdin)")
+    argparser.add_argument('--output', type=str, choices=modes, default=None, help="whether to output match labels, match orders, per-line scores, aggregate scores, or JSON structures")
     argparser.add_argument('--merge', action='store_true', help="whether to make spans continuous prior to eval")
     argparser.add_argument('--sentence', action='store_true', help="whether to increase all spans to whole-sentence size")
     argparser.add_argument('--aligned', action='store_true', help="if the spans of annotator 1 and annotator 2 are already 'aligned' for comparison")
@@ -52,7 +53,7 @@ def main():
     if args.sentence:
         raise NotImplementedError('--sentence not yet supported')
     if args.output:
-        raise NotImplementedError('--output not supported anymore; might reimplement later')
+        raise NotImplementedError('--output format not supported anymore; might reimplement later')
 
     docs = [parse_line(line) for line in args.file]
     peek = docs[0]
@@ -83,10 +84,14 @@ def do_comparison(docs: Iterable[dict], annotators: List[str], layers: list[str]
 
     for doc in docs:
 
-        texts, span_layers_left, span_layers_right = doc['text'], doc[f'spans_{annotator1}'], doc[f'spans_{annotator2}']
+        texts, span_layers_left, span_layers_right = doc['texts'], doc[f'spans_{annotator1}'], doc[f'spans_{annotator2}']
 
         if not already_aligned:
-            alignment_mapping = make_alignment_mapping(span_layers_left[0], span_layers_right[0], texts[0])
+            spans_left, spans_right = span_layers_left[0], span_layers_right[0]
+            if merge:
+                spans_left = make_spans_continuous(spans_left)
+                spans_right = make_spans_continuous(spans_right)
+            alignment_mapping = make_alignment_mapping(spans_left, spans_right, texts[0])
             bookkeeping['alignment_mappings'].append(alignment_mapping)
 
         for (layer, text, spans_left, spans_right) in zip(layers, texts, span_layers_left, span_layers_right):
@@ -95,7 +100,7 @@ def do_comparison(docs: Iterable[dict], annotators: List[str], layers: list[str]
             labels_left, labels_right = [], []
 
             if not already_aligned:
-                spans_right = [spans_right[index] for index in alignment_mapping]
+                spans_right = [spans_right[index] for index in alignment_mapping if index is not None]
             if merge:
                 spans_left = make_spans_continuous(spans_left)
                 spans_right = make_spans_continuous(spans_right)
@@ -184,7 +189,7 @@ def plot_to_html():
 
 def make_side_by_side_html(document_id, texts, spans1, spans2, layers):
 
-    html = [f'<tr><td></td></tr><tr><td><i>{document_id}</i></td></tr>']
+    html = [f'<tr><td style="border-bottom:2px solid gray" colspan="2"></td></tr><tr><td><i>{document_id}</i></td></tr>']
 
     for layer, text, spans_left, spans_right in zip(layers, texts, spans1, spans2):
 
