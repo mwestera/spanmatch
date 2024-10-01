@@ -33,8 +33,6 @@ OUTPUT_JSONL = 'jsonl'
 
 modes = [OUTPUT_LABELS, OUTPUT_MATCHES, OUTPUT_SCORES_PER_LINE, OUTPUT_AGGREGATE_SCORES, OUTPUT_JSONL]
 
-# TODO: Add characterwise and tokenwise scores as well.
-# TODO: Also add sentencewise scores: if spans are expanded to the full sentence; and implement --merge
 
 def main():
 
@@ -42,24 +40,31 @@ def main():
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help="file with text to process (default: stdin)")
     argparser.add_argument('--output', type=str, choices=modes, default=OUTPUT_LABELS, help="whether to output match labels, match orders, per-line scores, aggregate scores, or JSON structures")
     argparser.add_argument('--merge', action='store_true', help="whether to make spans continuous prior to eval")
-    argparser.add_argument('--verb', action='store_true', help="verbose, set logging level to debug")
-    argparser.add_argument('--ordered', action='store_true', help="if the pairs are in the same order (so don't compare all to all)")
+    argparser.add_argument('--sentence', action='store_true', help="whether to increase all spans to whole-sentence size")
+    argparser.add_argument('--aligned', action='store_true', help="if the spans of annotator 1 and annotator 2 are already 'aligned' for comparison")
     argparser.add_argument('--html', required=False, nargs='?', type=argparse.FileType('w'), default=tempfile.NamedTemporaryFile('w', delete=False, suffix='.html'), help='output detailed html report to a file; tempfile used if omitted')
+    argparser.add_argument('--debug', action='store_true', help="verbose, set logging level to debug")
 
     args = argparser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.verb else logging.INFO, format='')
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format='')
 
     if args.merge:
         raise NotImplementedError('--merge not yet supported')
+    if args.sentence:
+        raise NotImplementedError('--sentence not yet supported')
 
-    annotator1 = 'left' # TODO determine this from input data
-    annotator2 = 'right'
-    layers = ['questions', 'answers']
 
     docs = [parse_line(line) for line in args.file]
+    peek = docs[0]
 
-    results = do_comparison(docs, annotator1, annotator2, layers)
+    annotator1, annotator2 = [key.split('_', maxsplit=1)[-1] for key in peek if key.startswith('spans_')]
+    layers = peek['layers']
+
+    results = do_comparison(docs, annotator1, annotator2, layers, already_aligned=args.aligned)
+
+
+    # TODO: Handle output types: args.output
 
     if args.html:
         args.html.write(make_report(results, layers))
@@ -67,9 +72,9 @@ def main():
         webbrowser.open('file://' + os.path.abspath(args.html.name))
 
 
-def do_comparison(docs, annotator1, annotator2, layers):
+def do_comparison(docs: Iterable[str], annotator1, annotator2, layers: list[str], already_aligned=False) -> dict:
 
-    bookkeeping = {**{l: {'labels_left': [],    # TODO layer labels
+    bookkeeping = {**{l: {'labels_left': [],
                        'labels_right': [],
                        'predictions': [],
                        'targets': [],
@@ -80,17 +85,14 @@ def do_comparison(docs, annotator1, annotator2, layers):
 
     for doc in docs:
 
-        texts, span_layers_left, span_layers_right = doc['text'], doc['spans1'], doc['spans2']
+        texts, span_layers_left, span_layers_right = doc['text'], doc[f'spans_{annotator1}'], doc[f'spans_{annotator2}']
 
-        alignment_mapping = make_alignment_mapping(span_layers_left[0], span_layers_right[0], texts[0])
-        bookkeeping['alignment_mappings'].append(alignment_mapping)
+        if not already_aligned:
+            alignment_mapping = make_alignment_mapping(span_layers_left[0], span_layers_right[0], texts[0])
+            bookkeeping['alignment_mappings'].append(alignment_mapping)
+            span_layers_right = [[spans[index] for index in alignment_mapping] for spans in span_layers_right]
 
-        spans2_aligned = [[spans[index] for index in alignment_mapping] for spans in span_layers_right]
-
-        for (layer, text, spans_left, spans_right) in zip(layers, texts, span_layers_left, spans2_aligned):
-
-            if not spans_left or not spans_right:   # TODO necessary?
-                return None, None
+        for (layer, text, spans_left, spans_right) in zip(layers, texts, span_layers_left, span_layers_right):
 
             predictions, targets = [], []
             labels_left, labels_right = [], []
@@ -241,8 +243,8 @@ def evaluate_all(pairs_to_compare, do_print=False, mode=OUTPUT_AGGREGATE_SCORES,
 def parse_line(line):
     try:
         d = json.loads(line)    # TODO: type validation (dict with two keys, values [lists of] list of lists of pairs of ints; see test3.txt
-        d['spans1'] = [[[(s['start'], s['end']) for s in span] for span in spanlevel] for spanlevel in d['spans1']]
-        d['spans2'] = [[[(s['start'], s['end']) for s in span] for span in spanlevel] for spanlevel in d['spans2']]
+        for span_label in [k for k in d if k.startswith('spans_')]:
+            d[span_label] = [[[(s['start'], s['end']) for s in span] for span in spanlevel] for spanlevel in d[span_label]]
         return d
     except json.JSONDecodeError:
         left, right = line.strip().split('\t')
