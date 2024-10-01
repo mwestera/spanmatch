@@ -51,6 +51,8 @@ def main():
 
     if args.sentence:
         raise NotImplementedError('--sentence not yet supported')
+    if args.output:
+        raise NotImplementedError('--output not supported anymore; might reimplement later')
 
     docs = [parse_line(line) for line in args.file]
     peek = docs[0]
@@ -60,16 +62,13 @@ def main():
 
     results = do_comparison(docs, annotators, layers, already_aligned=args.aligned, merge=args.merge)
 
-
-    # TODO: Handle output types: args.output
-
     if args.html:
         args.html.write(make_report(results, layers))
         args.html.close()
         webbrowser.open('file://' + os.path.abspath(args.html.name))
 
 
-def do_comparison(docs: Iterable[str], annotators, layers: list[str], already_aligned=False, merge=False) -> dict:
+def do_comparison(docs: Iterable[dict], annotators: List[str], layers: list[str], already_aligned=False, merge=False) -> dict:
 
     annotator1, annotator2 = annotators
 
@@ -89,13 +88,14 @@ def do_comparison(docs: Iterable[str], annotators, layers: list[str], already_al
         if not already_aligned:
             alignment_mapping = make_alignment_mapping(span_layers_left[0], span_layers_right[0], texts[0])
             bookkeeping['alignment_mappings'].append(alignment_mapping)
-            span_layers_right = [[spans[index] for index in alignment_mapping] for spans in span_layers_right]
 
         for (layer, text, spans_left, spans_right) in zip(layers, texts, span_layers_left, span_layers_right):
 
             predictions, targets = [], []
             labels_left, labels_right = [], []
 
+            if not already_aligned:
+                spans_right = [spans_right[index] for index in alignment_mapping]
             if merge:
                 spans_left = make_spans_continuous(spans_left)
                 spans_right = make_spans_continuous(spans_right)
