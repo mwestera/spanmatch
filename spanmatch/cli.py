@@ -22,6 +22,8 @@ import base64
 import matplotlib.pyplot as plt
 
 import tempfile
+import seaborn as sns
+
 
 OUTPUT_LABELS = 'labels'
 OUTPUT_MATCHES = 'matches'
@@ -32,7 +34,6 @@ OUTPUT_JSONL = 'jsonl'
 modes = [OUTPUT_LABELS, OUTPUT_MATCHES, OUTPUT_SCORES_PER_LINE, OUTPUT_AGGREGATE_SCORES, OUTPUT_JSONL]
 
 # TODO: Add characterwise and tokenwise scores as well.
-# TODO: Add side-by-side html view with spanviz (requires text as input, which I'll need anyway for tokenwise f1...)
 # TODO: Also add sentencewise scores: if spans are expanded to the full sentence; and implement --merge
 
 def main():
@@ -111,8 +112,9 @@ def do_comparison(docs, annotator1, annotator2, layers):
             record['tokenwise_scores'].append(compute_binary_classification_scores(predictions, targets))
             record['categorical_scores'].append(compute_categorical_scores(labels_left, labels_right))
 
-        bookkeeping['html'].append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right))
+        bookkeeping['html'].append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right, layers))
 
+    bookkeeping['html'].append('</table>\n\n')
     return bookkeeping
 
 
@@ -133,17 +135,12 @@ def make_report(bookkeeping, layers):
         }
         aggregated_scores.append(scores)
 
-    df_match_counts = pd.DataFrame.from_dict(Counter(bookkeeping['questions']['labels_left']), orient='index')
-    df_match_counts.plot(kind='bar')
-    plot_html = plot_to_html()
-    html_for_comparison.insert(1, f'<h3>Question spans:</h3>\n{plot_html}\n')
+    match_counts = (pd.DataFrame({layer: Counter(bookkeeping[layer]['labels_left']) for layer in layers})
+                    .melt(ignore_index=False, value_name='count', var_name='layer').reset_index(names='type of (mis)match'))
 
-    df_match_counts = pd.DataFrame.from_dict(Counter(bookkeeping['answers']['labels_left']), orient='index')
-    df_match_counts.plot(kind='bar')
+    sns.barplot(data=match_counts, x='type of (mis)match', y='count', hue='layer')
     plot_html = plot_to_html()
-    html_for_comparison.insert(1, f'<h3>Answer spans:</h3>\n{plot_html}\n')
-
-    html_for_comparison.append('</table>\n\n')
+    html_for_comparison.insert(1, f'<h3>Frequencies of types of (mis)match:</h3>\n{plot_html}\n')
 
     scores_df = pd.DataFrame(aggregated_scores)
     scores_df.columns = pd.MultiIndex.from_tuples(aggregated_scores[0].keys())
@@ -165,32 +162,22 @@ def plot_to_html():
     return f'<img src="data:image/png;base64,{plot_base64}">'
 
 
-def make_side_by_side_html(document_id, texts, spans1, spans2):
+def make_side_by_side_html(document_id, texts, spans1, spans2, layers):
 
-    questions_text, context = texts
-    # question_spans_aligned_left, question_spans_aligned_right, answer_spans_left, answer_spans_right = spans1[0], spans2[0], spans1[1], spans2[2]
+    html = [f'<tr><td></td></tr><tr><td><i>{document_id}</i></td></tr>']
 
-    # TODO Avoid need for converting for spanviz
-    question_spans_aligned_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans1[0])]
-    question_spans_aligned_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans2[0])]
-    answer_spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans1[1])]
-    answer_spans_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans1[2])]
+    for layer, text, spans_left, spans_right in zip(layers, texts, spans1, spans2):
 
-    q_left = spanviz.spans_to_html(questions_text, question_spans_aligned_left)
-    q_right = spanviz.spans_to_html(questions_text, question_spans_aligned_right)
-    a_left = spanviz.spans_to_html(context, answer_spans_left)
-    a_right = spanviz.spans_to_html(context, answer_spans_right)
+        # TODO Avoid need for converting for spanviz
+        spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_left)]
+        spans_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_right)]
 
-    html = f'''<tr><td></td></tr><tr><td><i>{document_id}</i></td></tr>
-    <tr><td><b>Questions:</b></td></tr>
-    <tr><td>{q_left}</td>
-    <td>{q_right}</td></tr>
-    <tr><td></td></tr>
-    <tr><td><b>Answers:</b></td></tr>
-    <tr><td>{a_left}</td>
-    <td>{a_right}</td></tr>
-    '''
-    return html
+        html_left = spanviz.spans_to_html(text, spans_left)
+        html_right = spanviz.spans_to_html(text, spans_right)
+
+        html.append(f'<tr><td><b>{layer}</b></td></tr>\n<tr><td>{html_left}</td>\n<td>{html_right}</td></tr>\n<tr><td></td></tr>')
+
+    return '\n'.join(html)
 
 
 def evaluate_all(pairs_to_compare, do_print=False, mode=OUTPUT_AGGREGATE_SCORES, ordered=False):
