@@ -49,19 +49,16 @@ def main():
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format='')
 
-    if args.merge:
-        raise NotImplementedError('--merge not yet supported')
     if args.sentence:
         raise NotImplementedError('--sentence not yet supported')
-
 
     docs = [parse_line(line) for line in args.file]
     peek = docs[0]
 
-    annotator1, annotator2 = [key.split('_', maxsplit=1)[-1] for key in peek if key.startswith('spans_')]
+    annotators = [key.split('_', maxsplit=1)[-1] for key in peek if key.startswith('spans_')]
     layers = peek['layers']
 
-    results = do_comparison(docs, annotator1, annotator2, layers, already_aligned=args.aligned)
+    results = do_comparison(docs, annotators, layers, already_aligned=args.aligned, merge=args.merge)
 
 
     # TODO: Handle output types: args.output
@@ -72,7 +69,9 @@ def main():
         webbrowser.open('file://' + os.path.abspath(args.html.name))
 
 
-def do_comparison(docs: Iterable[str], annotator1, annotator2, layers: list[str], already_aligned=False) -> dict:
+def do_comparison(docs: Iterable[str], annotators, layers: list[str], already_aligned=False, merge=False) -> dict:
+
+    annotator1, annotator2 = annotators
 
     bookkeeping = {**{l: {'labels_left': [],
                        'labels_right': [],
@@ -97,13 +96,32 @@ def do_comparison(docs: Iterable[str], annotator1, annotator2, layers: list[str]
             predictions, targets = [], []
             labels_left, labels_right = [], []
 
-            for span1, span2 in zip(spans_left, spans_right):
-                preds, targs = match_spans_tokenwise(span1, span2, text)
+            if merge:
+                spans_left = make_spans_continuous(spans_left)
+                spans_right = make_spans_continuous(spans_right)
+
+            for span_left, span_right in zip(spans_left, spans_right):
+                preds, targs = match_spans_tokenwise(span_left, span_right, text)
 
                 predictions.extend(preds)
                 targets.extend(targs)
-                labels_left.append(match_spans_categorical(span1, span2))
-                labels_right.append(match_spans_categorical(span2, span1))
+                labels_left.append(match_spans_categorical(span_left, span_right))
+                labels_right.append(match_spans_categorical(span_right, span_left))
+
+            # if mode == OUTPUT_SCORES_PER_LINE:
+            #     print('{precision:.2f},{recall:.2f},{f1:.2f}  ({count})'.format(**scores_categorical))
+            # elif mode == OUTPUT_LABELS:
+            #     print(
+            #         ','.join(f'{l}' for l in match_labels_left) + '\t' + ','.join(f'{l}' for l in match_labels_right))
+            # elif mode == OUTPUT_MATCHES:
+            #     print(','.join(f'{i}' if i is not None else '' for i in match_indices_left) + '\t' +
+            #                  ','.join(f'{i}' if i is not None else '' for i in match_indices_right))
+            # elif mode == OUTPUT_JSONL:
+            #     print(json.dumps({
+            #         annotator1: {'labels': match_labels_left, 'indices': match_labels_left},
+            #         annotator2: {'labels': match_labels_right, 'indices': match_indices_right},
+            #         **scores_categorical,
+            #     }))
 
             record = bookkeeping[layer]
 
@@ -182,64 +200,6 @@ def make_side_by_side_html(document_id, texts, spans1, spans2, layers):
     return '\n'.join(html)
 
 
-def evaluate_all(pairs_to_compare, do_print=False, mode=OUTPUT_AGGREGATE_SCORES, ordered=False):
-
-    # TODO Refactor? with the help of a 'record' dict.
-    # TODO: Allow html output
-
-    print_or_log = print if do_print else logging.debug
-
-    all_match_labels_left = []
-    all_match_labels_right = []
-    scores_per_doc = []
-
-    for item in pairs_to_compare:
-        (annotator1, spans1), (annotator2, spans2) = item.items()
-        (match_labels_left, match_indices_left), (match_labels_right, match_indices_right), scores_tokenwise = match_span_many_to_many(spans1, spans2, in_order=ordered)
-
-        # TODO: Do something with scores_tokenwise
-        scores_categorical = compute_categorical_scores(match_labels_left, match_labels_right)
-
-        if mode == OUTPUT_SCORES_PER_LINE:
-            print_or_log('{precision:.2f},{recall:.2f},{f1:.2f}  ({count})'.format(**scores_categorical))
-        elif mode == OUTPUT_LABELS:
-            print_or_log(','.join(f'{l}' for l in match_labels_left) + '\t' + ','.join(f'{l}' for l in match_labels_right))
-        elif mode == OUTPUT_MATCHES:
-            print_or_log(','.join(f'{i}' if i is not None else '' for i in match_indices_left) + '\t' +
-                         ','.join(f'{i}' if i is not None else '' for i in match_indices_right))
-        elif mode == OUTPUT_JSONL:
-            print_or_log(json.dumps({
-                annotator1: {'labels': match_labels_left, 'indices': match_labels_left},
-                annotator2: {'labels': match_labels_right, 'indices': match_indices_right},
-                **scores_categorical,
-            }))
-
-        all_match_labels_left.extend(match_labels_left)
-        all_match_labels_right.extend(match_labels_right)
-        scores_per_doc.append(scores_categorical)
-
-    micro_scores = compute_categorical_scores(all_match_labels_left, all_match_labels_right)
-
-    macro_scores = {
-        'precision': nanmean(s['precision'] for s in scores_per_doc),
-        'recall': nanmean(s['recall'] for s in scores_per_doc),
-        'f1': nanmean(s['f1'] for s in scores_per_doc),
-        'count': sum(s['count'] for s in scores_per_doc),
-    }
-    aggregated_scores = {'micro': micro_scores, 'macro': macro_scores, }
-
-    format_scores = '{precision:.2f}, {recall:.2f}, {f1:.2f}  ({count})'.format
-    if mode == OUTPUT_AGGREGATE_SCORES:
-        print(format_scores(**micro_scores))
-        print(format_scores(**macro_scores))
-    else:
-        logging.info('Aggregated:')
-        logging.info('micro: ' + format_scores(**micro_scores))
-        logging.info('macro: ' + format_scores(**macro_scores))
-
-    return aggregated_scores
-
-
 def parse_line(line):
     try:
         d = json.loads(line)    # TODO: type validation (dict with two keys, values [lists of] list of lists of pairs of ints; see test3.txt
@@ -251,6 +211,10 @@ def parse_line(line):
         spansets1 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in left.split(';')]
         spansets2 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in right.split(';')]
         return {'left': spansets1, 'right': spansets2}
+
+
+def make_spans_continuous(spans: list[Span]) -> list[Span]:
+    return [[(min(s[0] for s in span), max(s[-1] for s in span))] if span else [] for span in spans]
 
 
 if __name__ == '__main__':
