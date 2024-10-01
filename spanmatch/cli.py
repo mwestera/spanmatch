@@ -3,25 +3,14 @@
 import argparse
 import sys
 import json
-import itertools
-from collections import Counter
 
 from .main import *
-import spanviz
-
-
 import logging
 
 import webbrowser
-import pandas as pd
 import os
-
-import io
-import base64
-import matplotlib.pyplot as plt
-
 import tempfile
-import seaborn as sns
+import copy
 
 
 OUTPUT_LABELS = 'labels'
@@ -56,154 +45,34 @@ def main():
     if args.output:
         raise NotImplementedError('--output format not supported anymore; might reimplement later')
 
-    docs = [parse_line(line) for line in args.file]
-    peek = docs[0]
+    first_line, lines = peek(args.file)
 
-    annotators = [key.split('_', maxsplit=1)[-1] for key in peek if key.startswith('spans_')]
-    layers = peek['layers']
+    peek_doc = parse_line(first_line)
+    annotators = [key.split('_', maxsplit=1)[-1] for key in peek_doc if key.startswith('spans_')]
+    layers = peek_doc['layers']
 
-    results = do_comparison(docs, annotators, layers, already_aligned=args.aligned, merge=args.merge)
+    aggregator = ComparisonAggregator(annotators, layers)
+
+    for line in lines:
+        doc = parse_line(line)
+        if args.merge:
+            doc = merge_spans_of_doc(doc, annotators)
+        if not args.aligned:
+            doc = align_spans_of_doc(doc, annotators)
+        aggregator.process(doc)
+
+    html_report = aggregator.make_report()
 
     if args.html:
-        args.html.write(make_report(results, layers))
+        args.html.write(html_report)
         args.html.close()
         webbrowser.open('file://' + os.path.abspath(args.html.name))
 
 
-def do_comparison(docs: Iterable[dict], annotators: List[str], layers: list[str], already_aligned=False, merge=False) -> dict:
-
-    annotator1, annotator2 = annotators
-
-    bookkeeping = {**{l: {'labels_left': [],
-                       'labels_right': [],
-                       'predictions': [],
-                       'targets': [],
-                       'tokenwise_scores': [],
-                       'categorical_scores': []} for l in layers},
-                    'alignment_mappings': [],
-                    'html': [f'<h2>Comparing {annotator1} and {annotator2}</h2>', f'\n<table><tr><td><b>{annotator1}</b></td><td><b>{annotator2}</b></td></tr>']}
-
-    for doc in docs:
-
-        texts, span_layers_left, span_layers_right = doc['texts'], doc[f'spans_{annotator1}'], doc[f'spans_{annotator2}']
-
-        if not already_aligned:
-            spans_left, spans_right = span_layers_left[0], span_layers_right[0]
-            if merge:
-                spans_left = make_spans_continuous(spans_left)
-                spans_right = make_spans_continuous(spans_right)
-            alignment_mapping = make_alignment_mapping(spans_left, spans_right, texts[0])
-            bookkeeping['alignment_mappings'].append(alignment_mapping)
-
-        for (layer, text, spans_left, spans_right) in zip(layers, texts, span_layers_left, span_layers_right):
-
-            predictions, targets = [], []
-            labels_left, labels_right = [], []
-
-            if not already_aligned:
-                spans_right = [spans_right[index] for index in alignment_mapping if index is not None]
-            if merge:
-                spans_left = make_spans_continuous(spans_left)
-                spans_right = make_spans_continuous(spans_right)
-
-            for span_left, span_right in zip(spans_left, spans_right):
-                preds, targs = match_spans_tokenwise(span_left, span_right, text)
-
-                predictions.extend(preds)
-                targets.extend(targs)
-                labels_left.append(match_spans_categorical(span_left, span_right))
-                labels_right.append(match_spans_categorical(span_right, span_left))
-
-            # if mode == OUTPUT_SCORES_PER_LINE:
-            #     print('{precision:.2f},{recall:.2f},{f1:.2f}  ({count})'.format(**scores_categorical))
-            # elif mode == OUTPUT_LABELS:
-            #     print(
-            #         ','.join(f'{l}' for l in match_labels_left) + '\t' + ','.join(f'{l}' for l in match_labels_right))
-            # elif mode == OUTPUT_MATCHES:
-            #     print(','.join(f'{i}' if i is not None else '' for i in match_indices_left) + '\t' +
-            #                  ','.join(f'{i}' if i is not None else '' for i in match_indices_right))
-            # elif mode == OUTPUT_JSONL:
-            #     print(json.dumps({
-            #         annotator1: {'labels': match_labels_left, 'indices': match_labels_left},
-            #         annotator2: {'labels': match_labels_right, 'indices': match_indices_right},
-            #         **scores_categorical,
-            #     }))
-
-            record = bookkeeping[layer]
-
-            record['labels_left'].extend(labels_left)
-            record['labels_right'].extend(labels_right)
-            record['predictions'].extend(predictions)
-            record['targets'].extend(targets)
-            record['tokenwise_scores'].append(compute_binary_classification_scores(predictions, targets))
-            record['categorical_scores'].append(compute_categorical_scores(labels_left, labels_right))
-
-        bookkeeping['html'].append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right, layers))
-
-    bookkeeping['html'].append('</table>\n\n')
-    return bookkeeping
-
-
-def make_report(bookkeeping, layers):
-
-    html_for_comparison = bookkeeping['html'].copy()
-
-    aggregated_scores = []
-    for layer in layers:
-        record = bookkeeping[layer]
-
-        scores = {
-            ('layer', '', ''): layer,
-            **{('tokenwise', 'micro', key): value for key, value in compute_binary_classification_scores(record['predictions'], record['targets']).items()},
-            **{('tokenwise', 'macro', key): value for key, value in compute_macro_scores(record['tokenwise_scores']).items()},
-            **{('categorical', 'micro', key): value for key, value in compute_categorical_scores(record['labels_left'], record['labels_right']).items()},
-            **{('categorical', 'macro', key): value for key, value in compute_macro_scores(record['categorical_scores']).items()},
-        }
-        aggregated_scores.append(scores)
-
-    match_counts = (pd.DataFrame({layer: Counter(bookkeeping[layer]['labels_left']) for layer in layers})
-                    .melt(ignore_index=False, value_name='count', var_name='layer').reset_index(names='type of (mis)match'))
-
-    sns.barplot(data=match_counts, x='type of (mis)match', y='count', hue='layer')
-    plot_html = plot_to_html()
-    html_for_comparison.insert(1, f'<h3>Frequencies of types of (mis)match:</h3>\n{plot_html}\n')
-
-    scores_df = pd.DataFrame(aggregated_scores)
-    scores_df.columns = pd.MultiIndex.from_tuples(aggregated_scores[0].keys())
-    # .to_markdown(floatfmt='.2f')
-    logging.info(scores_df.to_string())  # TODO: Maybe also log some plots?
-    html_for_comparison.insert(1, scores_df.to_html(float_format='{:.2f}'.format) + '\n\n')
-
-    return ''.join(html_for_comparison)
-
-
-def plot_to_html():
-    """
-    https://stackoverflow.com/a/63381737
-    """
-    s = io.BytesIO()
-    plt.savefig(s, format='png', bbox_inches="tight")
-    plt.close()
-    plot_base64 = base64.b64encode(s.getvalue()).decode("utf-8").replace("\n", "")
-    return f'<img src="data:image/png;base64,{plot_base64}">'
-
-
-def make_side_by_side_html(document_id, texts, spans1, spans2, layers):
-
-    html = [f'<tr><td style="border-bottom:2px solid gray" colspan="2"></td></tr><tr><td><i>{document_id}</i></td></tr>']
-
-    for layer, text, spans_left, spans_right in zip(layers, texts, spans1, spans2):
-
-        # TODO Avoid need for converting for spanviz
-        spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_left)]
-        spans_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_right)]
-
-        html_left = spanviz.spans_to_html(text, spans_left)
-        html_right = spanviz.spans_to_html(text, spans_right)
-
-        html.append(f'<tr><td><b>{layer}</b></td></tr>\n<tr><td>{html_left}</td>\n<td>{html_right}</td></tr>\n<tr><td></td></tr>')
-
-    return '\n'.join(html)
+def peek(iterator):
+    first = next(iterator)
+    restored_it = itertools.chain([first], iterator)
+    return first, restored_it
 
 
 def parse_line(line):
@@ -217,10 +86,6 @@ def parse_line(line):
         spansets1 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in left.split(';')]
         spansets2 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in right.split(';')]
         return {'left': spansets1, 'right': spansets2}
-
-
-def make_spans_continuous(spans: list[Span]) -> list[Span]:
-    return [[(min(s[0] for s in span), max(s[-1] for s in span))] if span else [] for span in spans]
 
 
 if __name__ == '__main__':

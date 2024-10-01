@@ -1,151 +1,162 @@
-import functools
-import math
-from typing import List, Any, Union, Iterable
-import itertools
-import re
 
-MATCH_LABELS = ['disjoint', 'overlap', 'subspan', 'superspan', 'exact']
-DISJOINT, OVERLAP, SUBSPAN, SUPERSPAN, EXACT = MATCH_LABELS
+import logging
+from collections import Counter
+import copy
 
+import seaborn as sns
+import pandas as pd
 
-Span = list[tuple[int, int]]    # span can be discontinuous, hence a list of tuples
+import io
+import base64
+import matplotlib.pyplot as plt
 
-
-def make_alignment_mapping(spans1: list[Span], spans2: list[Span], text, by_score='f1') -> list[Union[int, None]]:
-
-    scores = []
-    for (i, span1), (j, span2) in itertools.product(enumerate(spans1), enumerate(spans2)):
-        predictions, targets = match_spans_tokenwise(span1, span2, text)
-        scores.append((i, j, compute_binary_classification_scores(predictions, targets)[by_score]))
-    scores.sort(key=lambda t: t[-1], reverse=True)
-
-    already_matched1 = set()
-    already_matched2 = set()
-    index_map = {}
-    for i, j, _ in scores:
-        if i in already_matched1 or j in already_matched2:
-            continue
-        already_matched1.add(i)
-        already_matched2.add(j)
-        index_map[i] = j
-
-    # spans1 that do not have a counterpart in spans2, map to None
-    for i in range(len(spans1)):
-        if i not in already_matched1:
-            index_map[i] = None
-
-    return [index_map[i] for i in range(len(index_map))]
+import spanviz
+from .scoring import *
 
 
-def span_to_set(span: Span) -> set[int]:
+class ComparisonAggregator:
+
+    def __init__(self, annotators, layers):
+        self.recorded_results = {
+            **{l: {'labels_left': [],
+            'labels_right': [],
+            'predictions': [],
+            'targets': [],
+            'tokenwise_scores': [],
+            'categorical_scores': []} for l in layers},
+        }
+        self.annotators = annotators
+        self.layers = layers
+        self.html_comparisons = []
+
+    def process(self, doc):
+
+        annotator1, annotator2 = self.annotators
+        texts, span_layers_left, span_layers_right = doc['texts'], doc[f'spans_{annotator1}'], doc[
+            f'spans_{annotator2}']
+
+        for (layer, text, spans_left, spans_right) in zip(self.layers, texts, span_layers_left, span_layers_right):
+
+            predictions, targets = [], []
+            labels_left, labels_right = [], []
+
+            for span_left, span_right in zip(spans_left, spans_right):
+                preds, targs = match_spans_tokenwise(span_left, span_right, text)
+
+                predictions.extend(preds)
+                targets.extend(targs)
+                labels_left.append(match_spans_categorical(span_left, span_right))
+                labels_right.append(match_spans_categorical(span_right, span_left))
+
+            record = self.recorded_results[layer]
+
+            record['labels_left'].extend(labels_left)
+            record['labels_right'].extend(labels_right)
+            record['predictions'].extend(predictions)
+            record['targets'].extend(targets)
+            record['tokenwise_scores'].append(compute_binary_classification_scores(predictions, targets))
+            record['categorical_scores'].append(compute_categorical_scores(labels_left, labels_right))
+
+        self.html_comparisons.append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right, self.layers))
+
+    def make_report(self):
+        # TODO: Split this function up
+
+        annotator1, annotator2 = self.annotators
+        results = self.recorded_results
+
+        aggregated_scores = []
+        for layer in self.layers:
+            record = results[layer]
+
+            scores = {
+                ('layer', '', ''): layer,
+                **{('tokenwise', 'micro', key): value for key, value in compute_binary_classification_scores(record['predictions'], record['targets']).items()},
+                **{('tokenwise', 'macro', key): value for key, value in compute_macro_scores(record['tokenwise_scores']).items()},
+                **{('categorical', 'micro', key): value for key, value in compute_categorical_scores(record['labels_left'], record['labels_right']).items()},
+                **{('categorical', 'macro', key): value for key, value in compute_macro_scores(record['categorical_scores']).items()},
+            }
+            aggregated_scores.append(scores)
+
+        match_counts = (pd.DataFrame({layer: Counter(results[layer]['labels_left']) for layer in self.layers})
+                        .melt(ignore_index=False, value_name='count', var_name='layer').reset_index(names='type of (mis)match'))
+
+        sns.barplot(data=match_counts, x='type of (mis)match', y='count', hue='layer')
+        plot_html = plot_to_html()
+
+        scores_df = pd.DataFrame(aggregated_scores)
+        scores_df.columns = pd.MultiIndex.from_tuples(aggregated_scores[0].keys())
+        # .to_markdown(floatfmt='.2f')
+        logging.info(scores_df.to_string(float_format='{:.2f}'.format))  # TODO: Maybe also log some plots?
+
+        html_chunks = [
+            f'<h2>Comparing {annotator1} and {annotator2}</h2>',
+            scores_df.to_html(float_format='{:.2f}'.format) + '\n\n',
+            f'<h3>Frequencies of types of (mis)match:</h3>\n{plot_html}\n',
+            f'<h3>Side-by-side view:</h3>\n',
+            f'\n<table><tr><td><b>{annotator1}</b></td><td><b>{annotator2}</b></td></tr>',
+            *self.html_comparisons,
+            '</table>\n\n',
+        ]
+
+        return ''.join(html_chunks)
+
+
+def make_side_by_side_html(document_id, texts, spans1, spans2, layers):
+
+    html = [f'<tr><td style="border-bottom:2px solid gray" colspan="2"></td></tr><tr><td><i>{document_id}</i></td></tr>']
+
+    for layer, text, spans_left, spans_right in zip(layers, texts, spans1, spans2):
+
+        # TODO Avoid need for converting for spanviz
+        spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_left)]
+        spans_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_right)]
+
+        html_left = spanviz.spans_to_html(text, spans_left)
+        html_right = spanviz.spans_to_html(text, spans_right)
+
+        html.append(f'<tr><td><b>{layer}</b></td></tr>\n<tr><td>{html_left}</td>\n<td>{html_right}</td></tr>\n<tr><td></td></tr>')
+
+    return '\n'.join(html)
+
+
+def plot_to_html():
     """
-    >>> span_to_set([(1, 4), (7, 10)])
-    {1, 2, 3, 7, 8, 9}
-    >>> span_to_set([(1, 4)])
-    {1, 2, 3}
+    https://stackoverflow.com/a/63381737
     """
-    return set(itertools.chain(*(range(*s) for s in span)))
+    s = io.BytesIO()
+    plt.savefig(s, format='png', bbox_inches="tight")
+    plt.close()
+    plot_base64 = base64.b64encode(s.getvalue()).decode("utf-8").replace("\n", "")
+    return f'<img src="data:image/png;base64,{plot_base64}">'
 
 
-def match_spans_categorical(span1: Span, span2: Span, margin=2) -> str:
 
-    set1 = span_to_set(span1)
-    set2 = span_to_set(span2)
+def merge_spans_of_doc(doc, annotators) -> dict:
+    doc = copy.deepcopy(doc)
 
-    if set1 == set2:
-        return EXACT
-    if (len(set1 - set2) <= margin) and (len(set2 - set1) <= margin):
-        return EXACT # NEAR_EXACT
-    if len(set1 - set2) <= margin:
-        return SUBSPAN
-    if len(set2 - set1) <= margin:
-        return SUPERSPAN
-    if set1 & set2:
-        return OVERLAP
-    return DISJOINT
+    for annotator in annotators:
+        doc[f'spans_{annotator}'] = [ [[merge_span(span) for span in spans] for spans in span_level]
+                                      for span_level in doc[f'spans_{annotator}'] ]
+
+    return doc
 
 
-word_regex = re.compile(r'\w+')
+def merge_span(span: Span) -> Span:
+    return [(min(s[0] for s in span), max(s[-1] for s in span))] if span else []
 
 
-@functools.cache
-def get_token_spans(text: str) -> list[Span]:
-    return [[match.span()] for match in word_regex.finditer(text)]
+def align_spans_of_doc(doc, annotators) -> dict:
 
+    doc = copy.deepcopy(doc)
+    annotator1, annotator2 = annotators
 
-def match_spans_tokenwise(span1: Span, span2: Span, text: str) -> tuple[list, list]:
+    span_layers_left = doc[f'spans_{annotator1}']
+    span_layers_right = doc[f'spans_{annotator2}']
 
-    set1 = span_to_set(span1)
-    set2 = span_to_set(span2)
+    spans_left, spans_right = span_layers_left[0], span_layers_right[0]
+    alignment_mapping = make_alignment_mapping(spans_left, spans_right, doc['texts'][0])
 
-    predictions = []
-    targets = []
-    for token_span in get_token_spans(text):
-        token_set = span_to_set(token_span)
-        predictions.append(True if token_set <= set1 else False)
-        targets.append(True if token_set <= set2 else False)
+    doc[f'spans_{annotator2}'] = [[spans_right[index] for index in alignment_mapping if index is not None] for spans_right in span_layers_right]
 
-    return predictions, targets
-
-
-def compute_categorical_scores(match_labels_left: list[str], match_labels_right: list[str]) -> dict:
-    n_exact_left = sum(l == EXACT for l in match_labels_left)
-    precision = n_exact_left / len(match_labels_left) if match_labels_left else float('nan')
-
-    n_exact_right = sum(l == EXACT for l in match_labels_right)
-    recall = n_exact_right / len(match_labels_right) if match_labels_right else float('nan')
-
-    f1 = harmonic_mean(precision, recall) if match_labels_left and match_labels_right else float('nan')
-
-    count = len([d for d in match_labels_left if d is not None])
-    return {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'count': count,
-    }
-
-
-def compute_binary_classification_scores(predictions: list[bool], targets: list[bool]) -> dict:
-    tp = sum(p and t for p, t in zip(predictions, targets))
-
-    # tn = sum(not p and not t for p, t in zip(predictions, targets))
-    # accuracy = (tp + tn) / len(predictions)
-
-    sumpreds = sum(predictions)
-    sumtargets = sum(targets)
-
-    precision = tp / sumpreds if sumpreds else float('nan')
-    recall = tp / sumtargets if sumtargets else float('nan')
-    f1 = harmonic_mean(precision, recall) if sumpreds and sumtargets else float('nan')
-
-    return {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'count': len(predictions)
-    }
-
-
-def compute_macro_scores(scores):
-    scores = {
-        'precision': nanmean(s['precision'] for s in scores),
-        'recall': nanmean(s['recall'] for s in scores),
-        'f1': nanmean(s['f1'] for s in scores),
-        'count': len(scores)
-    }
-    return scores
-
-
-def harmonic_mean(a, b):
-    if a == 0 or b == 0:
-        return 0
-    return 2 / (1/a + 1/b)
-
-
-def nanmean(i: Iterable):
-    j = [f for f in i if not math.isnan(f)]
-    if not j:
-        return math.nan
-
-    return sum(j) / len(j)
+    return doc
