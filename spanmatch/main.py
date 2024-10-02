@@ -113,8 +113,8 @@ def make_side_by_side_html(document_id, texts, spans1, spans2):
         spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_left)]
         spans_right = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_right)]
 
-        html_left = spanviz.spans_to_html(text, spans_left)
-        html_right = spanviz.spans_to_html(text, spans_right)
+        html_left = spanviz.spans_to_html(text, spans_left, rainbow=True)
+        html_right = spanviz.spans_to_html(text, spans_right, rainbow=True)
 
         html.append(f'<tr><td><b>{layer}</b></td></tr>\n<tr><td>{html_left}</td>\n<td>{html_right}</td></tr>\n<tr><td></td></tr>')
 
