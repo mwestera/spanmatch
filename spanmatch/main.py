@@ -32,10 +32,10 @@ class ComparisonAggregator:
     def process(self, doc):
 
         annotator1, annotator2 = self.annotators
-        texts, span_layers_left, span_layers_right = doc['texts'], doc[f'spans_{annotator1}'], doc[
-            f'spans_{annotator2}']
+        texts, span_layers_left, span_layers_right = doc['text'], doc['spans'][annotator1], doc['spans'][annotator2]
 
-        for (layer, text, spans_left, spans_right) in zip(self.layers, texts, span_layers_left, span_layers_right):
+        for layer, text in texts.items():
+            spans_left, spans_right = span_layers_left[layer], span_layers_right[layer]
 
             predictions, targets = [], []
             labels_left, labels_right = [], []
@@ -57,7 +57,7 @@ class ComparisonAggregator:
             record['tokenwise_scores'].append(compute_binary_classification_scores(predictions, targets))
             record['categorical_scores'].append(compute_categorical_scores(labels_left, labels_right))
 
-        self.html_comparisons.append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right, self.layers))
+        self.html_comparisons.append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right))
 
     def make_report(self):
         # TODO: Split this function up
@@ -102,11 +102,12 @@ class ComparisonAggregator:
         return ''.join(html_chunks)
 
 
-def make_side_by_side_html(document_id, texts, spans1, spans2, layers):
+def make_side_by_side_html(document_id, texts, spans1, spans2):
 
     html = [f'<tr><td style="border-bottom:2px solid gray" colspan="2"></td></tr><tr><td><i>{document_id}</i></td></tr>']
 
-    for layer, text, spans_left, spans_right in zip(layers, texts, spans1, spans2):
+    for layer, text in texts.items():
+        spans_left, spans_right = spans1[layer], spans2[layer]
 
         # TODO Avoid need for converting for spanviz
         spans_left = [[{'start': x, 'end': y, 'label': str(n)} for (x, y) in span] for n, span in enumerate(spans_left)]
@@ -131,13 +132,11 @@ def plot_to_html():
     return f'<img src="data:image/png;base64,{plot_base64}">'
 
 
-
-def merge_spans_of_doc(doc, annotators) -> dict:
+def merge_spans_of_doc(doc) -> dict:
     doc = copy.deepcopy(doc)
 
-    for annotator in annotators:
-        doc[f'spans_{annotator}'] = [ [[merge_span(span) for span in spans] for spans in span_level]
-                                      for span_level in doc[f'spans_{annotator}'] ]
+    for name, span_levels in doc['spans'].items():
+        doc['spans'][name] = {layer: [[merge_span(span) for span in spans] for spans in span_level] for layer, span_level in doc['spans'][name]}
 
     return doc
 
@@ -146,17 +145,23 @@ def merge_span(span: Span) -> Span:
     return [(min(s[0] for s in span), max(s[-1] for s in span))] if span else []
 
 
-def align_spans_of_doc(doc, annotators) -> dict:
+def align_spans_of_doc(doc) -> dict:
+    """
+    Aligns all annotations of this document, to the final (rightmost) annotation.
+    """
 
     doc = copy.deepcopy(doc)
-    annotator1, annotator2 = annotators
+    spans = doc['spans']
 
-    span_layers_left = doc[f'spans_{annotator1}']
-    span_layers_right = doc[f'spans_{annotator2}']
+    names = list(spans)
+    span_layers_right = spans[names[-1]]
+    first_layer_spans_right = next(iter(span_layers_right.values()))
+    first_layer_text = next(iter(doc['text'].values()))
 
-    spans_left, spans_right = span_layers_left[0], span_layers_right[0]
-    alignment_mapping = make_alignment_mapping(spans_left, spans_right, doc['texts'][0])
-
-    doc[f'spans_{annotator2}'] = [[spans_right[index] for index in alignment_mapping if index is not None] for spans_right in span_layers_right]
+    for name in names[:-1]:
+        span_layers_left = doc['spans'][name]
+        first_layer_spans_left = next(iter(span_layers_left.values()))
+        alignment_mapping = make_alignment_mapping(first_layer_spans_right, first_layer_spans_left, first_layer_text)
+        spans[name] = {layer: [spans_left[index] for index in alignment_mapping if index is not None] for layer, spans_left in span_layers_left.items()}
 
     return doc

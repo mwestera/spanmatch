@@ -21,8 +21,6 @@ OUTPUT_JSONL = 'jsonl'
 
 modes = [OUTPUT_LABELS, OUTPUT_MATCHES, OUTPUT_SCORES_PER_LINE, OUTPUT_AGGREGATE_SCORES, OUTPUT_JSONL]
 
-
-# TODO: Simplify/generalize input format
 # TODO: Allow comparing more than two annotators, pairwise
 
 def main():
@@ -46,19 +44,18 @@ def main():
         raise NotImplementedError('--output format not supported anymore; might reimplement later')
 
     first_line, lines = peek(args.file)
-
     peek_doc = parse_line(first_line)
-    annotators = [key.split('_', maxsplit=1)[-1] for key in peek_doc if key.startswith('spans_')]
-    layers = peek_doc['layers']
+    annotators = list(peek_doc['spans'].keys())
+    layers = peek_doc['text'].keys()
 
     aggregator = ComparisonAggregator(annotators, layers)
 
     for line in lines:
         doc = parse_line(line)
         if args.merge:
-            doc = merge_spans_of_doc(doc, annotators)
+            doc = merge_spans_of_doc(doc)
         if not args.aligned:
-            doc = align_spans_of_doc(doc, annotators)
+            doc = align_spans_of_doc(doc)
         aggregator.process(doc)
 
     html_report = aggregator.make_report()
@@ -76,16 +73,22 @@ def peek(iterator):
 
 
 def parse_line(line):
-    try:
-        d = json.loads(line)    # TODO: type validation (dict with two keys, values [lists of] list of lists of pairs of ints; see test3.txt
-        for span_label in [k for k in d if k.startswith('spans_')]:
-            d[span_label] = [[[(s['start'], s['end']) for s in span] for span in spanlevel] for spanlevel in d[span_label]]
-        return d
-    except json.JSONDecodeError:
-        left, right = line.strip().split('\t')
-        spansets1 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in left.split(';')]
-        spansets2 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in right.split(';')]
-        return {'left': spansets1, 'right': spansets2}
+    """
+    {'id': ..., 'texts': {'layer1': text, ...}, 'spans': {'annotator1': {'layer1': [...], ...}, 'annotator2': {'layer1': [...], ...]}}}
+    """
+    # TODO: type validation
+    d = json.loads(line)
+    for name, spans in d['spans'].items():
+        d['spans'][name] = {layer: [[(s['start'], s['end']) for s in span] for span in spanlayer] for layer, spanlayer in spans.items()}
+    return d
+
+    # TODO: Re-enable this flat sort of input
+    # except json.JSONDecodeError as e:
+    #     logging.info(e)
+    #     left, right = line.strip().split('\t')
+    #     spansets1 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in left.split(';')]
+    #     spansets2 = [[[int(i) for i in span.split('-')] for span in s.split(',')] for s in right.split(';')]
+    #     return {'left': spansets1, 'right': spansets2}
 
 
 if __name__ == '__main__':
