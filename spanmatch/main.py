@@ -162,6 +162,6 @@ def align_spans_of_doc(doc) -> dict:
         span_layers_left = doc['spans'][name]
         first_layer_spans_left = next(iter(span_layers_left.values()))
         alignment_mapping = make_alignment_mapping(first_layer_spans_right, first_layer_spans_left, first_layer_text)
-        spans[name] = {layer: [spans_left[index] for index in alignment_mapping if index is not None] for layer, spans_left in span_layers_left.items()}
+        spans[name] = {layer: [spans_left[index] for index in alignment_mapping if index is not None] + [spans_left for index, spans_left in enumerate(spans_left) if index not in alignment_mapping] for layer, spans_left in span_layers_left.items()}
 
     return doc
