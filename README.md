@@ -20,7 +20,40 @@ $ pip install git+https://github.com/mwestera/spanviz
 $ pip install git+https://github.com/mwestera/spanmatch
 ```
 
-## Usage
+This makes available `spanmatch` to import in Python, as well as the `spanmatch` command-line interface.
+
+## Module usage
+
+```python
+import spanmatch
+
+annotations_per_document = [
+    {
+        "id": "document1",
+         "text": {
+             "questions": "Herinnert u zich mijn schriftelijke vragen over het weigeren van mannelijke artsen door gesluierde vrouwen? Herinnert u zich uw antwoord dat zoveel mogelijk recht moet worden gedaan aan de keuzevrijheid van de cli\u00ebnt, maar dat er wel grenzen zijn? Kunt u aangeven waar deze grenzen liggen en waarop deze zijn gebaseerd? .",
+             "answers": "Het zou alleen mogelijk zijn om dat per specifieke situatie precies aan te geven, maar de keuzevrijheid van de pati\u00ebnt mag er niet toe leiden dat de veiligheid van de zorg in gevaar komt. "},
+         "spans": {
+             "mw": {"questions": [[{"start": 0, "end": 107}], [{"start": 50, "end": 80}]], "answers": [[{"start": 87, "end": 187}], [{"start": 108, "end": 247}], [{"start": 248, "end": 321}]]},
+             "js": {"questions": [[{"start": 50, "end": 80}], [{"start": 0, "end": 107}]], "answers": [[{"start": 248, "end": 321}], [{"start": 0, "end": 187}]]}
+         }
+     },
+    # ... more documents
+]
+
+aggregator = spanmatch.ComparisonAggregator(['mw', 'js'], ['questions', 'answers'])
+
+for doc in annotations_per_document:
+    spanmatch.flatten_spans(doc)    # to turn {'start': 41, 'end': 66} dicts into [41, 66] pairs
+    aggregator.process(doc)
+
+scores = aggregator.compute_scores()
+print(scores)
+
+```
+
+
+## Command-line usage (`spanmatch` command)
 
 Input is a `.jsonl` file containing JSON entries, one line for each 'document', that should have three keys: `id`, `text` and `spans`.
 

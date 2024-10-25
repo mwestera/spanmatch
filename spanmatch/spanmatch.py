@@ -14,22 +14,62 @@ import spanviz
 from .scoring import *
 
 
+"""
+Example:
+
+```python
+import spanmatch
+
+docs = [
+{"id": "document1",  "text": {"questions": "Herinnert u zich mijn schriftelijke vragen over het weigeren van mannelijke artsen door gesluierde vrouwen? Herinnert u zich uw antwoord dat zoveel mogelijk recht moet worden gedaan aan de keuzevrijheid van de cli\u00ebnt, maar dat er wel grenzen zijn? Kunt u aangeven waar deze grenzen liggen en waarop deze zijn gebaseerd? .", "answers": "Het zou alleen mogelijk zijn om dat per specifieke situatie precies aan te geven, maar de keuzevrijheid van de pati\u00ebnt mag er niet toe leiden dat de veiligheid van de zorg in gevaar komt. "}, "spans": {"mw": {"questions": [[{"start": 0, "end": 107}], [{"start": 50, "end": 80}]], "answers": [[{"start": 87, "end": 187}], [{"start": 108, "end": 247}], [{"start": 248, "end": 321}]]}, "js": {"questions": [[{"start": 50, "end": 80}], [{"start": 0, "end": 107}]], "answers": [[{"start": 248, "end": 321}], [{"start": 0, "end": 187}]]}}}
+...
+]
+
+aggregator = spanmatch.ComparisonAggregator(['annotator1', 'annotator2'], ['questions', 'answers'])
+
+for doc in docs:
+    doc = flatten_spans(doc)
+    aggregator.process(doc)
+
+scores = aggregator.compute_scores()
+
+```
+"""
+
+
 class ComparisonAggregator:
 
-    def __init__(self, annotators, layers):
+    def __init__(self, annotators: list[str], layer_names: list[str], merge_spans=False, already_aligned=False):
         self.recorded_results = {
             **{l: {'labels_left': [],
             'labels_right': [],
             'predictions': [],
             'targets': [],
             'tokenwise_scores': [],
-            'categorical_scores': []} for l in layers},
+            'categorical_scores': []} for l in layer_names},
         }
         self.annotators = annotators
-        self.layers = layers
+        self.layer_names = layer_names
         self.html_comparisons = []
+        self.merge_spans = merge_spans
+        self.do_align = not already_aligned
 
-    def process(self, doc):
+    def process(self, doc: dict):
+        """
+        Each doc should have same format as the cli.py script, with keys 'texts', 'spans'.
+
+        'texts' should be a dictionary from names (e.g., "questions", "context") to strings.
+        spans should be a dict from annotator names, to dictionaries, the latter mapping each text layer name to their annotations for that layer.
+
+        Example:
+
+             {'id': ..., 'texts': {'layer1': text, ...}, 'spans': {'annotator1': {'layer1': [...], ...}, 'annotator2': {'layer1': [...], ...]}}}
+
+        """
+        if self.merge_spans:
+            doc = merge_spans_of_doc(doc)
+        if self.do_align:
+            doc = align_spans_of_doc(doc)
 
         annotator1, annotator2 = self.annotators
         texts, span_layers_left, span_layers_right = doc['text'], doc['spans'][annotator1], doc['spans'][annotator2]
@@ -60,34 +100,17 @@ class ComparisonAggregator:
         self.html_comparisons.append(make_side_by_side_html(doc['id'], texts, span_layers_left, span_layers_right))
 
     def make_report(self):
-        # TODO: Split this function up
 
-        annotator1, annotator2 = self.annotators
-        results = self.recorded_results
+        scores_df = self.compute_scores()
+        logging.info(scores_df.to_string(float_format='{:.2f}'.format))  # TODO: Maybe also log some plots?
 
-        aggregated_scores = []
-        for layer in self.layers:
-            record = results[layer]
-
-            scores = {
-                ('layer', '', ''): layer,
-                **{('tokenwise', 'micro', key): value for key, value in compute_binary_classification_scores(record['predictions'], record['targets']).items()},
-                **{('tokenwise', 'macro', key): value for key, value in compute_macro_scores(record['tokenwise_scores']).items()},
-                **{('categorical', 'micro', key): value for key, value in compute_categorical_scores(record['labels_left'], record['labels_right']).items()},
-                **{('categorical', 'macro', key): value for key, value in compute_macro_scores(record['categorical_scores']).items()},
-            }
-            aggregated_scores.append(scores)
-
-        match_counts = (pd.DataFrame({layer: Counter(results[layer]['labels_left']) for layer in self.layers})
+        match_counts = (pd.DataFrame({layer: Counter(self.recorded_results[layer]['labels_left']) for layer in self.layer_names})
                         .melt(ignore_index=False, value_name='count', var_name='layer').reset_index(names='type of (mis)match'))
 
         sns.barplot(data=match_counts, x='type of (mis)match', y='count', hue='layer')
         plot_html = plot_to_html()
 
-        scores_df = pd.DataFrame(aggregated_scores)
-        scores_df.columns = pd.MultiIndex.from_tuples(aggregated_scores[0].keys())
-        # .to_markdown(floatfmt='.2f')
-        logging.info(scores_df.to_string(float_format='{:.2f}'.format))  # TODO: Maybe also log some plots?
+        annotator1, annotator2 = self.annotators
 
         html_chunks = [
             f'<h2>Comparing {annotator1} and {annotator2}</h2>',
@@ -100,6 +123,25 @@ class ComparisonAggregator:
         ]
 
         return ''.join(html_chunks)
+
+
+    def compute_scores(self):
+        aggregated_scores = []
+        for layer in self.layer_names:
+            record = self.recorded_results[layer]
+
+            scores = {
+                ('layer', '', ''): layer,
+                **{('tokenwise', 'micro', key): value for key, value in compute_binary_classification_scores(record['predictions'], record['targets']).items()},
+                **{('tokenwise', 'macro', key): value for key, value in compute_macro_scores(record['tokenwise_scores']).items()},
+                **{('categorical', 'micro', key): value for key, value in compute_categorical_scores(record['labels_left'], record['labels_right']).items()},
+                **{('categorical', 'macro', key): value for key, value in compute_macro_scores(record['categorical_scores']).items()},
+            }
+            aggregated_scores.append(scores)
+
+        scores_df = pd.DataFrame(aggregated_scores)
+        scores_df.columns = pd.MultiIndex.from_tuples(aggregated_scores[0].keys())
+        return scores_df
 
 
 def make_side_by_side_html(document_id, texts, spans1, spans2):
@@ -165,3 +207,12 @@ def align_spans_of_doc(doc) -> dict:
         spans[name] = {layer: [spans_left[index] for index in alignment_mapping if index is not None] + [spans_left for index, spans_left in enumerate(spans_left) if index not in alignment_mapping] for layer, spans_left in span_layers_left.items()}
 
     return doc
+
+
+def flatten_spans(doc):
+    """
+    Turn spans of a document (so a deeply nested structure, with spans per layers, per annotator)
+    from dict-format ({"start": 54, "end": 582}) into pair-format ([54, 582])
+    """
+    for name, spans in doc['spans'].items():
+        doc['spans'][name] = {layer: [[(s['start'], s['end']) for s in span] for span in spanlayer] for layer, spanlayer in spans.items()}

@@ -1,1 +1,1 @@
-from .main import *
+from .spanmatch import ComparisonAggregator, flatten_spans

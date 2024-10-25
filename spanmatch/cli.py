@@ -4,13 +4,13 @@ import argparse
 import sys
 import json
 
-from .main import *
+from .spanmatch import ComparisonAggregator, flatten_spans
+import itertools
 import logging
 
 import webbrowser
 import os
 import tempfile
-import copy
 
 
 OUTPUT_LABELS = 'labels'
@@ -48,14 +48,10 @@ def main():
     annotators = list(peek_doc['spans'].keys())
     layers = peek_doc['text'].keys()
 
-    aggregator = ComparisonAggregator(annotators, layers)
+    aggregator = ComparisonAggregator(annotators, layers, merge_spans=args.merge_spans, already_aligned=args.aligned)
 
     for line in lines:
         doc = parse_line(line)
-        if args.merge:
-            doc = merge_spans_of_doc(doc)
-        if not args.aligned:
-            doc = align_spans_of_doc(doc)
         aggregator.process(doc)
 
     html_report = aggregator.make_report()
@@ -78,8 +74,7 @@ def parse_line(line):
     """
     # TODO: type validation
     d = json.loads(line)
-    for name, spans in d['spans'].items():
-        d['spans'][name] = {layer: [[(s['start'], s['end']) for s in span] for span in spanlayer] for layer, spanlayer in spans.items()}
+    flatten_spans(d)
     return d
 
     # TODO: Re-enable this flat sort of input
