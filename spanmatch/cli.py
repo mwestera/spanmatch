@@ -48,7 +48,7 @@ def main():
     annotators = list(peek_doc['spans'].keys())
     layers = peek_doc['text'].keys()
 
-    aggregator = ComparisonAggregator(annotators, layers, merge_spans=args.merge_spans, already_aligned=args.aligned)
+    aggregator = ComparisonAggregator(annotators, layers, merge_spans=args.merge, already_aligned=args.aligned)
 
     for line in lines:
         doc = parse_line(line)
