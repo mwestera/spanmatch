@@ -113,6 +113,8 @@ class ComparisonAggregator:
         annotator1, annotator2 = self.annotators
 
         html_chunks = [
+            f'<head><title>{annotator1}</title></head>'
+            '<body>',
             f'<h2>Comparing {annotator1} and {annotator2}</h2>',
             scores_df.to_html(float_format='{:.2f}'.format) + '\n\n',
             f'<h3>Frequencies of types of (mis)match:</h3>\n{plot_html}\n',
@@ -120,6 +122,7 @@ class ComparisonAggregator:
             f'\n<table><tr><td><b>{annotator1}</b></td><td><b>{annotator2}</b></td></tr>',
             *self.html_comparisons,
             '</table>\n\n',
+            '</body>',
         ]
 
         return ''.join(html_chunks)
