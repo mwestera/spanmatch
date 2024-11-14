@@ -61,6 +61,11 @@ def main():
         args.html.close()
         webbrowser.open('file://' + os.path.abspath(args.html.name))
 
+    print(json.dumps({
+        'annotators': annotators,
+        'scores': aggregator.compute_scores().to_dict(),
+    }))
+
 
 def peek(iterator):
     first = next(iterator)
