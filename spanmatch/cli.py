@@ -45,7 +45,7 @@ def main():
 
     first_line, lines = peek(args.file)
     peek_doc = parse_line(first_line)
-    annotators = list(peek_doc['spans'].keys())
+    annotators = list(peek_doc['spans'].keys())  # TODO: how to handle missing data?
     layers = peek_doc['text'].keys()
 
     aggregator = ComparisonAggregator(annotators, layers, merge_spans=args.merge, already_aligned=args.aligned)
